@@ -6,13 +6,10 @@ import {
 } from 'lucide-react';
 
 const QUOTES = [
-  "Seneca: \"Yaşamayı öğrenmek bütün bir hayatı sürer.\"",
-  "Marcus Aurelius: \"Düşüncelerinin niteliği, hayatının kalitesini belirler.\"",
-  "Epiktetos: \"Olaylar bizi değil, bizim onlara bakış açımız bizi rahatsız eder.\"",
-  "Seneca: \"Hiçbir rüzgar, nereye gideceğini bilmeyen bir gemiye yardım edemez.\"",
-  "Marcus Aurelius: \"Sabah uyandığında, hayatta olmanın nasıl bir ayrıcalık olduğunu düşün.\"",
-  "Epiktetos: \"Eğer bir şeyin olmasını istiyorsan, onu kendin yap.\"",
-  "Seneca: \"Zorluklar zihni güçlendirir, tıpkı çalışmanın bedeni güçlendirdiği gibi.\""
+  "Seneca: \"It takes a whole lifetime to learn how to live.\"",
+  "Marcus Aurelius: \"The quality of your thoughts determines the quality of your life."",
+  "Epiktetos: \"It is not events that disturb us, but our view of them.\"",
+  
 ];
 
 const INITIAL_TASKS = [
