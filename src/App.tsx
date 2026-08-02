@@ -7,7 +7,7 @@ import {
 
 const QUOTES = [
   "Seneca: \"It takes a whole lifetime to learn how to live.\"",
-  "Marcus Aurelius: \"The quality of your thoughts determines the quality of your life."",
+  "Marcus Aurelius: \"The quality of your thoughts determines the quality of your life.\"",
   "Epiktetos: \"It is not events that disturb us, but our view of them.\"",
   
 ];
