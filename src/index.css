@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-200 font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+  }
+}
+
+@layer utilities {
+  @keyframes jiggle {
+    0% { transform: rotate(-2deg) scale(1.03); }
+    50% { transform: rotate(2deg) scale(1.03); }
+    100% { transform: rotate(-2deg) scale(1.03); }
+  }
+  .task-jiggle {
+    animation: jiggle 0.3s ease-in-out infinite;
+    box-shadow: 0 15px 35px -5px rgba(0,0,0,0.5);
+    z-index: 50;
+    cursor: grabbing !important;
+    border-color: #6366f1 !important;
+  }
+}
