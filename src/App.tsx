@@ -13,15 +13,15 @@ const QUOTES = [
 ];
 
 const INITIAL_TASKS = [
-  { id: '1', title: 'Arayüz tasarımını tamamla', notes: 'Kullanıcı dostu, minimal.', subtasks: '', resources: '', blockers: '', status: 'todo', collapsed: false, pane1Title: 'Fikirler / Notlar', pane2Title: 'Alt Parçalar', pane3Title: 'Kaynaklar & Linkler', pane4Title: 'Riskler & Engeller' },
-  { id: '2', title: 'API entegrasyonu', notes: 'Backend servislerine bağlanılacak.', subtasks: '', resources: '', blockers: '', status: 'in-progress', collapsed: false, pane1Title: 'Fikirler / Notlar', pane2Title: 'Alt Parçalar', pane3Title: 'Kaynaklar & Linkler', pane4Title: 'Riskler & Engeller' }
+{ id: '1', title: 'Complete UI design', notes: 'User-friendly, minimal.', subtasks: '', resources: '', blockers: '', status: 'todo', collapsed: false, pane1Title: 'Ideas / Notes', pane2Title: 'Subtasks', pane3Title: 'Resources & Links', pane4Title: 'Risks & Blockers' },
+{ id: '2', title: 'API integration', notes: 'Will connect to backend services.', subtasks: '', resources: '', blockers: '', status: 'in-progress', collapsed: false, pane1Title: 'Ideas / Notes', pane2Title: 'Subtasks', pane3Title: 'Resources & Links', pane4Title: 'Risks & Blockers' }
 ];
 
 const INITIAL_COLUMNS = [
-  { id: 'todo', title: 'Bekleyenler', color: 'slate', x: 20, y: 100, collapsed: false },
-  { id: 'in-progress', title: 'Yapılıyor', color: 'indigo', x: 360, y: 100, collapsed: false },
-  { id: 'paused', title: 'Takıldı / Yarım', color: 'red', x: 700, y: 100, collapsed: false },
-  { id: 'done', title: 'Tamamlandı', color: 'emerald', x: 1040, y: 100, collapsed: false }
+{ id: 'todo', title: 'To Do', color: 'slate', x: 20, y: 100, collapsed: false },
+{ id: 'in-progress', title: 'In Progress', color: 'indigo', x: 360, y: 100, collapsed: false },
+{ id: 'paused', title: 'Stuck / On Hold', color: 'red', x: 700, y: 100, collapsed: false },
+{ id: 'done', title: 'Completed', color: 'emerald', x: 1040, y: 100, collapsed: false }
 ];
 
 // Types
