@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, GripVertical, CheckCircle2, Circle, Clock, AlertCircle, 
   Play, Pause, RotateCcw, ChevronLeft, Trash2, ChevronUp, ChevronDown, Image as ImageIcon,
-  MoreHorizontal, Search, Minimize2, Square, X, Check, Save
+  MoreHorizontal, Search, Minus, Square, X, Check, Save, LayoutGrid,
+  Columns3, Rows3, PanelTop
 } from 'lucide-react';
 
 const QUOTES = [
@@ -18,10 +19,10 @@ const INITIAL_TASKS = [
 ];
 
 const INITIAL_COLUMNS = [
-{ id: 'todo', title: 'To Do', color: 'slate', x: 20, y: 100, collapsed: false },
-{ id: 'in-progress', title: 'In Progress', color: 'indigo', x: 360, y: 100, collapsed: false },
-{ id: 'paused', title: 'Stuck / On Hold', color: 'red', x: 700, y: 100, collapsed: false },
-{ id: 'done', title: 'Completed', color: 'emerald', x: 1040, y: 100, collapsed: false }
+{ id: 'todo', title: 'To Do', color: 'slate', x: 20, y: 100, width: 320, height: null, collapsed: false },
+{ id: 'in-progress', title: 'In Progress', color: 'indigo', x: 360, y: 100, width: 320, height: null, collapsed: false },
+{ id: 'paused', title: 'Stuck / On Hold', color: 'red', x: 700, y: 100, width: 320, height: null, collapsed: false },
+{ id: 'done', title: 'Completed', color: 'emerald', x: 1040, y: 100, width: 320, height: null, collapsed: false }
 ];
 
 // Types
@@ -46,6 +47,8 @@ type Column = {
   color: string;
   x: number;
   y: number;
+  width: number;
+  height: number | null;
   collapsed: boolean;
 };
 
@@ -76,6 +79,8 @@ type DragState = {
 };
 
 type ActiveMenu = { id: string | null; x: number; y: number };
+type LayoutPreset = 'columns' | 'grid' | 'focus' | 'rows';
+type SnapRect = { x: number; y: number; width: number; height: number };
 
 const HISTORY_LIMIT = 20;
 const TASK_DEFAULTS = {
@@ -95,8 +100,14 @@ const COLUMN_DEFAULTS = {
   color: 'slate',
   x: 0,
   y: 0,
+  width: 320,
+  height: null as number | null,
   collapsed: false
 };
+
+const CANVAS_TOP = 88;
+const LAYOUT_GAP = 12;
+const SNAP_DISTANCE = 36;
 
 const IMAGE_MAX_LENGTH = 20;
 
@@ -139,6 +150,18 @@ const asBoolean = (value: unknown, fallback = false) =>
 const asSafeNumber = (value: unknown, fallback: number) =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
 
+const LEGACY_PANE_TITLES: Record<string, string> = {
+  'Fikirler / Notlar': 'Ideas / Notes',
+  'Alt Parçalar': 'Subtasks',
+  'Kaynaklar & Linkler': 'Resources & Links',
+  'Riskler & Engeller': 'Risks & Blockers'
+};
+
+const translatePaneTitle = (value: unknown, fallback: string) => {
+  const title = asString(value, fallback);
+  return LEGACY_PANE_TITLES[title] ?? title;
+};
+
 const TIMER_SECONDS: Record<TimerMode, number> = {
   focus: 25 * 60,
   shortBreak: 5 * 60
@@ -155,10 +178,10 @@ const normalizeTask = (value: unknown): Task | null => {
     blockers: asString(value.blockers, TASK_DEFAULTS.blockers),
     status: asString(value.status, TASK_DEFAULTS.status),
     collapsed: asBoolean(value.collapsed, TASK_DEFAULTS.collapsed),
-    pane1Title: asString(value.pane1Title, TASK_DEFAULTS.pane1Title),
-    pane2Title: asString(value.pane2Title, TASK_DEFAULTS.pane2Title),
-    pane3Title: asString(value.pane3Title, TASK_DEFAULTS.pane3Title),
-    pane4Title: asString(value.pane4Title, TASK_DEFAULTS.pane4Title)
+    pane1Title: translatePaneTitle(value.pane1Title, TASK_DEFAULTS.pane1Title),
+    pane2Title: translatePaneTitle(value.pane2Title, TASK_DEFAULTS.pane2Title),
+    pane3Title: translatePaneTitle(value.pane3Title, TASK_DEFAULTS.pane3Title),
+    pane4Title: translatePaneTitle(value.pane4Title, TASK_DEFAULTS.pane4Title)
   };
 };
 
@@ -170,6 +193,8 @@ const normalizeColumn = (value: unknown): Column | null => {
     color: asString(value.color, COLUMN_DEFAULTS.color),
     x: typeof value.x === 'number' ? value.x : COLUMN_DEFAULTS.x,
     y: typeof value.y === 'number' ? value.y : COLUMN_DEFAULTS.y,
+    width: typeof value.width === 'number' ? value.width : COLUMN_DEFAULTS.width,
+    height: typeof value.height === 'number' ? value.height : COLUMN_DEFAULTS.height,
     collapsed: asBoolean(value.collapsed, COLUMN_DEFAULTS.collapsed)
   };
 };
@@ -236,6 +261,8 @@ export default function FocusFlowApp() {
   const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
   const [focusedTask, setFocusedTask] = useState<string | null>(null);
   const [activeMenu, setActiveMenu] = useState<ActiveMenu>({ id: null, x: 0, y: 0 });
+  const [isTilingOpen, setIsTilingOpen] = useState(false);
+  const [snapPreview, setSnapPreview] = useState<SnapRect | null>(null);
 
   // Drag Engine State
   const [dragState, setDragState] = useState<DragState>({
@@ -331,8 +358,8 @@ export default function FocusFlowApp() {
         setTimeLeft(TIMER_SECONDS.focus);
       }
       if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(timerMode === 'focus' ? 'Odak tamamlandı' : 'Mola tamamlandı', {
-          body: timerMode === 'focus' ? 'Bir nefes alma zamanı.' : 'Yeni odak turuna hazırsın.'
+        new Notification(timerMode === 'focus' ? 'Focus session complete' : 'Break complete', {
+          body: timerMode === 'focus' ? 'Time to take a breath.' : 'You are ready for a new focus session.'
         });
       }
     }
@@ -553,7 +580,7 @@ export default function FocusFlowApp() {
     const newTask = { 
         id: Date.now().toString(), 
         title, notes: '', subtasks: '', resources: '', blockers: '', status: colId, collapsed: false,
-        pane1Title: 'Fikirler / Notlar', pane2Title: 'Alt Parçalar', pane3Title: 'Kaynaklar & Linkler', pane4Title: 'Riskler & Engeller'
+        pane1Title: 'Ideas / Notes', pane2Title: 'Subtasks', pane3Title: 'Resources & Links', pane4Title: 'Risks & Blockers'
     };
     updateState([...tasks, newTask], null, null);
     setNewTaskTitles(prev => ({ ...prev, [colId]: '' }));
@@ -561,6 +588,7 @@ export default function FocusFlowApp() {
 
   const handleGlobalClick = (e: React.MouseEvent<HTMLDivElement>) => {
     setActiveMenu({ id: null, x: 0, y: 0 });
+    setIsTilingOpen(false);
     const target = e.target as HTMLElement | null;
     if (target && (target.id === 'canvas-bg' || target.tagName === 'HEADER')) {
       setSelectedTasks([]);
@@ -568,11 +596,122 @@ export default function FocusFlowApp() {
     }
   };
 
+  const getUsableCanvas = () => {
+    const width = Math.max(320, window.innerWidth - LAYOUT_GAP * 2);
+    const height = Math.max(240, window.innerHeight - CANVAS_TOP - LAYOUT_GAP);
+    return { width, height };
+  };
+
+  const getLayoutRects = (preset: LayoutPreset, count: number): SnapRect[] => {
+    const { width, height } = getUsableCanvas();
+    const left = LAYOUT_GAP;
+    const top = CANVAS_TOP;
+    if (count === 0) return [];
+
+    if (preset === 'columns') {
+      const cellWidth = (width - LAYOUT_GAP * (count - 1)) / count;
+      return Array.from({ length: count }, (_, index) => ({
+        x: left + index * (cellWidth + LAYOUT_GAP), y: top,
+        width: cellWidth, height
+      }));
+    }
+
+    if (preset === 'rows') {
+      const cellHeight = (height - LAYOUT_GAP * (count - 1)) / count;
+      return Array.from({ length: count }, (_, index) => ({
+        x: left, y: top + index * (cellHeight + LAYOUT_GAP),
+        width, height: cellHeight
+      }));
+    }
+
+    if (preset === 'focus') {
+      if (count === 1) return [{ x: left, y: top, width, height }];
+      const mainWidth = (width - LAYOUT_GAP) * 0.66;
+      const sideWidth = width - mainWidth - LAYOUT_GAP;
+      const sideHeight = (height - LAYOUT_GAP * (count - 2)) / (count - 1);
+      return [
+        { x: left, y: top, width: mainWidth, height },
+        ...Array.from({ length: count - 1 }, (_, index) => ({
+          x: left + mainWidth + LAYOUT_GAP,
+          y: top + index * (sideHeight + LAYOUT_GAP),
+          width: sideWidth,
+          height: sideHeight
+        }))
+      ];
+    }
+
+    const columnCount = Math.ceil(Math.sqrt(count));
+    const rowCount = Math.ceil(count / columnCount);
+    const cellWidth = (width - LAYOUT_GAP * (columnCount - 1)) / columnCount;
+    const cellHeight = (height - LAYOUT_GAP * (rowCount - 1)) / rowCount;
+    return Array.from({ length: count }, (_, index) => ({
+      x: left + (index % columnCount) * (cellWidth + LAYOUT_GAP),
+      y: top + Math.floor(index / columnCount) * (cellHeight + LAYOUT_GAP),
+      width: cellWidth,
+      height: cellHeight
+    }));
+  };
+
+  const applyLayout = (preset: LayoutPreset) => {
+    saveToHistory();
+    const rects = getLayoutRects(preset, columns.length);
+    setColumns(prev => prev.map((column, index) => ({
+      ...column,
+      ...rects[index],
+      collapsed: false
+    })));
+    setIsTilingOpen(false);
+  };
+
+  const resetDefaultLayout = () => {
+    saveToHistory();
+    const rects = getLayoutRects('columns', columns.length);
+    setColumns(prev => prev.map((column, index) => ({
+      ...column,
+      x: rects[index].x,
+      y: CANVAS_TOP + LAYOUT_GAP,
+      width: rects[index].width,
+      height: null,
+      collapsed: false
+    })));
+    setIsTilingOpen(false);
+  };
+
+  const getSnapRect = (clientX: number, clientY: number): SnapRect | null => {
+    const { width, height } = getUsableCanvas();
+    const left = LAYOUT_GAP;
+    const top = CANVAS_TOP;
+    const halfWidth = (width - LAYOUT_GAP) / 2;
+    const halfHeight = (height - LAYOUT_GAP) / 2;
+    const thirdHeight = (height - LAYOUT_GAP * 2) / 3;
+    const nearLeft = clientX <= SNAP_DISTANCE;
+    const nearRight = clientX >= window.innerWidth - SNAP_DISTANCE;
+    const nearTop = clientY <= SNAP_DISTANCE;
+    const nearBottom = clientY >= window.innerHeight - SNAP_DISTANCE;
+
+    if (nearTop && nearLeft) return { x: left, y: top, width: halfWidth, height: halfHeight };
+    if (nearTop && nearRight) return { x: left + halfWidth + LAYOUT_GAP, y: top, width: halfWidth, height: halfHeight };
+    if (nearBottom && nearLeft) return { x: left, y: top + halfHeight + LAYOUT_GAP, width: halfWidth, height: halfHeight };
+    if (nearBottom && nearRight) return { x: left + halfWidth + LAYOUT_GAP, y: top + halfHeight + LAYOUT_GAP, width: halfWidth, height: halfHeight };
+    if (nearLeft) return { x: left, y: top, width: halfWidth, height };
+    if (nearRight) return { x: left + halfWidth + LAYOUT_GAP, y: top, width: halfWidth, height };
+    if (nearTop) return { x: left, y: top, width, height: thirdHeight };
+    if (nearBottom) return { x: left, y: top + height - thirdHeight, width, height: thirdHeight };
+    return null;
+  };
+
+  const clampPosition = (x: number, y: number, width: number, height: number) => ({
+    x: Math.min(Math.max(LAYOUT_GAP, x), Math.max(LAYOUT_GAP, window.innerWidth - width - LAYOUT_GAP)),
+    y: Math.min(Math.max(CANVAS_TOP, y), Math.max(CANVAS_TOP, window.innerHeight - height - LAYOUT_GAP))
+  });
+
   const onPointerDown = (e: React.PointerEvent, item: Task | Column | ImageItem, type: 'task' | 'column' | 'image') => {
     const targetEl = e.target as HTMLElement | null;
     if (e.nativeEvent instanceof PointerEvent && (e.nativeEvent.button !== 0)) return;
     if (targetEl && (targetEl.tagName === 'INPUT' || targetEl.tagName === 'TEXTAREA' || targetEl.tagName === 'BUTTON' || targetEl.closest('button'))) return;
     e.stopPropagation();
+
+    if (type === 'column' || type === 'image') saveToHistory();
 
     const rect = (e.currentTarget as Element).getBoundingClientRect();
     const offsetX = e.clientX - rect.left;
@@ -615,22 +754,31 @@ export default function FocusFlowApp() {
       
       if (dragState.type === 'column' && dragState.item) {
         const colItem = dragState.item as Column;
-        setColumns(prev => prev.map(c => c.id === colItem.id ? { ...c, x: e.clientX - dragState.offsetX, y: e.clientY - dragState.offsetY } : c));
+        const columnElement = document.querySelector(`[data-id="${colItem.id}"]`);
+        const rect = columnElement?.getBoundingClientRect();
+        const size = {
+          width: rect?.width ?? colItem.width,
+          height: rect?.height ?? colItem.height ?? 240
+        };
+        const position = clampPosition(e.clientX - dragState.offsetX, e.clientY - dragState.offsetY, size.width, size.height);
+        setColumns(prev => prev.map(c => c.id === colItem.id ? { ...c, ...position } : c));
+        setSnapPreview(getSnapRect(e.clientX, e.clientY));
       } else if (dragState.type === 'image' && dragState.item) {
         const imgItem = dragState.item as ImageItem;
-        setImages(prev => prev.map(img => img.id === imgItem.id ? { ...img, x: e.clientX - dragState.offsetX, y: e.clientY - dragState.offsetY } : img));
+        const position = clampPosition(e.clientX - dragState.offsetX, e.clientY - dragState.offsetY, imgItem.width, imgItem.height);
+        setImages(prev => prev.map(img => img.id === imgItem.id ? { ...img, ...position } : img));
       }
     };
 
     const onPointerUp = (e: PointerEvent) => {
       if (dragState.pending) {
          setDragState({ isDragging: false, pending: false, type: null, item: null, pointerX: 0, pointerY: 0, offsetX: 0, offsetY: 0, startX: 0, startY: 0, startClientX: 0, startClientY: 0 });
+         setSnapPreview(null);
          return;
       }
 
-      saveToHistory();
-
       if (dragState.type === 'task' && dragState.item) {
+        saveToHistory();
         const dragged = dragState.item as Task;
         const colElements = document.querySelectorAll('.column-container');
         let targetColId: string = dragged.status;
@@ -681,15 +829,42 @@ export default function FocusFlowApp() {
                 }
             }
         });
+      } else if (dragState.type === 'column' && dragState.item) {
+        const snapped = getSnapRect(e.clientX, e.clientY);
+        if (snapped) {
+          const columnId = (dragState.item as Column).id;
+          setColumns(prev => prev.map(column => column.id === columnId
+            ? { ...column, ...snapped, collapsed: false }
+            : column));
+        }
       }
 
       setDragState({ isDragging: false, pending: false, type: null, item: null, pointerX: 0, pointerY: 0, offsetX: 0, offsetY: 0, startX: 0, startY: 0, startClientX: 0, startClientY: 0 });
+      setSnapPreview(null);
     };
 
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
     return () => { window.removeEventListener('pointermove', onPointerMove); window.removeEventListener('pointerup', onPointerUp); };
   }, [dragState, selectedTasks]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    const keepColumnsOnScreen = () => {
+      setColumns(prev => prev.map(column => {
+        const width = Math.min(column.width, Math.max(220, window.innerWidth - LAYOUT_GAP * 2));
+        const height = column.height === null
+          ? null
+          : Math.min(column.height, Math.max(180, window.innerHeight - CANVAS_TOP - LAYOUT_GAP));
+        const position = clampPosition(column.x, column.y, width, height ?? 240);
+        return { ...column, ...position, width, height };
+      }));
+    };
+
+    keepColumnsOnScreen();
+    window.addEventListener('resize', keepColumnsOnScreen);
+    return () => window.removeEventListener('resize', keepColumnsOnScreen);
+  }, [isHydrated]);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -736,19 +911,19 @@ export default function FocusFlowApp() {
         <div className="absolute top-4 left-4 pointer-events-auto" style={{ WebkitAppRegion: 'no-drag' } as any}>
           <div className="flex items-center gap-2 bg-slate-800/90 backdrop-blur-md px-3 py-2 rounded-2xl border border-slate-700/60 shadow-lg">
             <div className="flex rounded-lg bg-slate-950/50 p-0.5 text-[11px] font-semibold">
-              <button onClick={() => changeTimerMode('focus')} className={`px-2 py-1 rounded-md transition-colors ${timerMode === 'focus' ? 'bg-indigo-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}>Odak</button>
-              <button onClick={() => changeTimerMode('shortBreak')} className={`px-2 py-1 rounded-md transition-colors ${timerMode === 'shortBreak' ? 'bg-emerald-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}>Mola</button>
+              <button onClick={() => changeTimerMode('focus')} className={`px-2 py-1 rounded-md transition-colors ${timerMode === 'focus' ? 'bg-indigo-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}>Focus</button>
+              <button onClick={() => changeTimerMode('shortBreak')} className={`px-2 py-1 rounded-md transition-colors ${timerMode === 'shortBreak' ? 'bg-emerald-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}>Break</button>
             </div>
             <Clock size={17} className={timerMode === 'focus' ? 'text-indigo-400' : 'text-emerald-400'} />
             <span className="text-xl font-bold font-mono text-slate-100 tabular-nums">{formatTime(timeLeft)}</span>
-            <button title={isActive ? 'Duraklat' : 'Başlat'} onClick={() => setIsActive(!isActive)} className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors">
+            <button title={isActive ? 'Pause' : 'Start'} onClick={() => setIsActive(!isActive)} className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors">
               {isActive ? <Pause size={16} /> : <Play size={16} />}
             </button>
-            <button title="Sıfırla" onClick={() => { setIsActive(false); setTimeLeft(TIMER_SECONDS[timerMode]); }} className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors">
+            <button title="Reset timer" onClick={() => { setIsActive(false); setTimeLeft(TIMER_SECONDS[timerMode]); }} className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors">
               <RotateCcw size={16} />
             </button>
             <div className="w-px h-6 bg-slate-700/50 mx-0.5"></div>
-            <div className="flex items-center gap-1 text-sm font-medium text-slate-400 select-none" title="Tamamlanan odak turu">
+            <div className="flex items-center gap-1 text-sm font-medium text-slate-400 select-none" title="Completed focus sessions">
               🍅 <span className="text-slate-200 font-bold">{pomodoros}</span>
             </div>
           </div>
@@ -766,22 +941,74 @@ export default function FocusFlowApp() {
             <input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Görevlerde ara..."
+              placeholder="Search tasks..."
               className="w-48 bg-slate-800/90 border border-slate-700/60 rounded-xl py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/60"
             />
           </label>
+          <button
+            title="Restore the default layout"
+            onClick={(event) => { event.stopPropagation(); resetDefaultLayout(); }}
+            className="h-9 px-3 rounded-xl border border-slate-700/60 bg-slate-800/90 text-slate-400 hover:text-white hover:bg-slate-700 flex items-center gap-1.5 text-xs font-medium"
+          >
+            <RotateCcw size={14} /> Reset layout
+          </button>
+          <div className="relative" data-tiling-menu onClick={(event) => event.stopPropagation()}>
+            <button
+              title="Tiling options"
+              onClick={() => setIsTilingOpen(open => !open)}
+              className={`h-9 px-3 rounded-xl border flex items-center gap-1.5 text-xs font-medium transition-colors ${isTilingOpen ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200' : 'border-slate-700/60 bg-slate-800/90 text-slate-400 hover:text-white hover:bg-slate-700'}`}
+            >
+              <LayoutGrid size={14} /> Tiling
+            </button>
+            {isTilingOpen && (
+              <div className="absolute right-0 top-11 w-64 rounded-2xl border border-slate-700 bg-slate-900/95 backdrop-blur-xl shadow-2xl p-2 z-[120]">
+                <p className="px-2 pt-1 pb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Column layout</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => applyLayout('columns')} className="p-3 rounded-xl border border-slate-700/70 bg-slate-800/70 hover:border-indigo-500/60 hover:bg-indigo-500/10 text-left">
+                    <Columns3 size={19} className="text-indigo-400 mb-2" />
+                    <span className="block text-xs font-medium text-slate-200">Side by side</span>
+                    <span className="text-[10px] text-slate-500">Equal columns</span>
+                  </button>
+                  <button onClick={() => applyLayout('grid')} className="p-3 rounded-xl border border-slate-700/70 bg-slate-800/70 hover:border-indigo-500/60 hover:bg-indigo-500/10 text-left">
+                    <LayoutGrid size={19} className="text-cyan-400 mb-2" />
+                    <span className="block text-xs font-medium text-slate-200">2 × 2 grid</span>
+                    <span className="text-[10px] text-slate-500">Four equal areas</span>
+                  </button>
+                  <button onClick={() => applyLayout('focus')} className="p-3 rounded-xl border border-slate-700/70 bg-slate-800/70 hover:border-indigo-500/60 hover:bg-indigo-500/10 text-left">
+                    <PanelTop size={19} className="text-emerald-400 mb-2" />
+                    <span className="block text-xs font-medium text-slate-200">Focus layout</span>
+                    <span className="text-[10px] text-slate-500">One large, three small</span>
+                  </button>
+                  <button onClick={() => applyLayout('rows')} className="p-3 rounded-xl border border-slate-700/70 bg-slate-800/70 hover:border-indigo-500/60 hover:bg-indigo-500/10 text-left">
+                    <Rows3 size={19} className="text-amber-400 mb-2" />
+                    <span className="block text-xs font-medium text-slate-200">Stacked</span>
+                    <span className="text-[10px] text-slate-500">Equal rows</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           <div className={`h-9 min-w-[92px] px-3 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-medium bg-slate-800/90 ${saveStatus === 'error' ? 'border-red-500/40 text-red-300' : 'border-slate-700/60 text-slate-400'}`}>
-            {saveStatus === 'saving' ? <><Save size={13} /> Kaydediliyor</> : saveStatus === 'error' ? 'Kayıt hatası' : <><Check size={13} className="text-emerald-400" /> Kaydedildi</>}
+            {saveStatus === 'saving' ? <><Save size={13} /> Saving</> : saveStatus === 'error' ? 'Save failed' : <><Check size={13} className="text-emerald-400" /> Saved</>}
           </div>
           {electronBridge && (
             <div className="flex items-center bg-slate-800/90 border border-slate-700/60 rounded-xl overflow-hidden">
-              <button title="Küçült" onClick={() => electronBridge.minimize()} className="p-2.5 text-slate-400 hover:bg-slate-700 hover:text-white"><Minimize2 size={14} /></button>
-              <button title="Büyüt / geri al" onClick={() => electronBridge.toggleMaximize()} className="p-2.5 text-slate-400 hover:bg-slate-700 hover:text-white"><Square size={13} /></button>
-              <button title="Kapat" onClick={closeApp} className="p-2.5 text-slate-400 hover:bg-red-500 hover:text-white"><X size={15} /></button>
+              <button title="Minimize" onClick={() => electronBridge.minimize()} className="p-2.5 text-slate-400 hover:bg-slate-700 hover:text-white"><Minus size={15} strokeWidth={2} /></button>
+              <button title="Maximize / restore" onClick={() => electronBridge.toggleMaximize()} className="p-2.5 text-slate-400 hover:bg-slate-700 hover:text-white"><Square size={13} /></button>
+              <button title="Close" onClick={closeApp} className="p-2.5 text-slate-400 hover:bg-red-500 hover:text-white"><X size={15} /></button>
             </div>
           )}
         </div>
       </header>
+
+      {snapPreview && (
+        <div
+          className="fixed pointer-events-none z-30 rounded-2xl border-2 border-indigo-400/80 bg-indigo-500/20 shadow-[0_0_40px_rgba(99,102,241,0.25)] transition-all duration-100"
+          style={{ left: snapPreview.x, top: snapPreview.y, width: snapPreview.width, height: snapPreview.height }}
+        >
+          <div className="absolute inset-3 rounded-xl border border-indigo-300/30"></div>
+        </div>
+      )}
 
       {/* INFINITE CANVAS ITEMS */}
       <div className="absolute inset-0 z-10 pointer-events-none">
@@ -791,15 +1018,25 @@ export default function FocusFlowApp() {
           <div
             key={col.id}
             data-id={col.id}
+            onPointerUp={(event) => {
+              if (event.target !== event.currentTarget || dragState.isDragging || dragState.pending || col.collapsed) return;
+              const rect = event.currentTarget.getBoundingClientRect();
+              saveToHistory();
+              setColumns(prev => prev.map(column => column.id === col.id
+                ? { ...column, width: rect.width, height: rect.height }
+                : column));
+            }}
             className={`column-container pointer-events-auto absolute flex flex-col gap-3 rounded-2xl p-4 shadow-xl border select-none transition-colors
               ${col.id === 'paused' ? 'bg-red-500/5 border-red-900/30' : 'bg-slate-800/50 border-slate-700/50 backdrop-blur-sm'}
               ${dragState.isDragging && dragState.item?.id === col.id ? 'opacity-80 ring-2 ring-indigo-500' : ''}
             `}
             style={{ 
               left: col.x, top: col.y, 
-              width: col.collapsed ? 'auto' : '320px', 
-              height: col.collapsed ? 'auto' : 'auto',
+              width: col.collapsed ? 'auto' : col.width,
+              height: col.collapsed ? 'auto' : col.height ?? 'auto',
               minHeight: col.collapsed ? 'auto' : '150px',
+              maxWidth: `calc(100vw - ${col.x + LAYOUT_GAP}px)`,
+              maxHeight: `calc(100vh - ${col.y + LAYOUT_GAP}px)`,
               resize: col.collapsed ? 'none' : 'both', overflow: 'auto'
             }}
           >
@@ -829,7 +1066,7 @@ export default function FocusFlowApp() {
                      <Plus size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-400 transition-colors" />
                      <input
                         type="text"
-                        placeholder="Görev ekle..."
+                        placeholder="Add a task..."
                         value={newTaskTitles[col.id] || ''}
                         onChange={(e) => setNewTaskTitles(prev => ({ ...prev, [col.id]: e.target.value }))}
                         className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/50 focus:bg-slate-800/80 transition-all"
@@ -938,8 +1175,8 @@ export default function FocusFlowApp() {
            style={{ left: activeMenu.x, top: activeMenu.y }}
            onClick={(e) => e.stopPropagation()}
         >
-           <button onClick={(e) => { e.stopPropagation(); setExpandedTask(tasks.find(t => t.id === activeMenu.id) || null); setActiveMenu({id:null, x:0, y:0}); }} className="px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white w-full text-left rounded-md">Düzenle</button>
-           <button onClick={(e) => { e.stopPropagation(); updateState(tasks.filter(t => t.id !== activeMenu.id), null, null); setActiveMenu({id:null, x:0, y:0}); }} className="px-3 py-2 text-sm text-red-400 hover:bg-red-500/20 w-full text-left rounded-md">Sil</button>
+           <button onClick={(e) => { e.stopPropagation(); setExpandedTask(tasks.find(t => t.id === activeMenu.id) || null); setActiveMenu({id:null, x:0, y:0}); }} className="px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 hover:text-white w-full text-left rounded-md">Edit</button>
+           <button onClick={(e) => { e.stopPropagation(); updateState(tasks.filter(t => t.id !== activeMenu.id), null, null); setActiveMenu({id:null, x:0, y:0}); }} className="px-3 py-2 text-sm text-red-400 hover:bg-red-500/20 w-full text-left rounded-md">Delete</button>
         </div>
       )}
 
@@ -961,14 +1198,14 @@ export default function FocusFlowApp() {
                   updateTaskById(expandedTask.id, task => ({ ...task, title: val }));
                 }}
                 className="bg-transparent text-2xl font-semibold text-slate-100 focus:outline-none w-full mr-4 placeholder-slate-600 py-1"
-                placeholder="Görev başlığı..."
+                placeholder="Task title..."
               />
               <div className="flex items-center gap-3">
                  <span className="text-xs font-medium bg-indigo-500/20 text-indigo-300 px-3 py-1 rounded-full border border-indigo-500/20 whitespace-nowrap">
                    {columns.find(c => c.id === expandedTask.status)?.title}
                  </span>
                  <button onClick={() => setExpandedTask(null)} className="text-slate-400 hover:text-white transition-colors bg-slate-800 p-2 rounded-xl hover:bg-slate-700">
-                   Kapat
+                   Close
                  </button>
               </div>
             </div>
@@ -982,7 +1219,7 @@ export default function FocusFlowApp() {
                   <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0"></div>
                   <input 
                      type="text" 
-                     value={expandedTask.pane1Title || 'Fikirler / Notlar'} 
+                     value={expandedTask.pane1Title || 'Ideas / Notes'} 
                      onChange={(e) => {
                        const val = e.target.value;
                        setExpandedTask(prev => prev ? ({ ...prev, pane1Title: val }) : prev);
@@ -1008,7 +1245,7 @@ export default function FocusFlowApp() {
                   <div className="w-2 h-2 rounded-full bg-indigo-500 shrink-0"></div>
                   <input 
                      type="text" 
-                     value={expandedTask.pane2Title || 'Alt Parçalar'} 
+                     value={expandedTask.pane2Title || 'Subtasks'} 
                      onChange={(e) => {
                        const val = e.target.value;
                        setExpandedTask(prev => prev ? ({ ...prev, pane2Title: val }) : prev);
@@ -1034,7 +1271,7 @@ export default function FocusFlowApp() {
                   <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></div>
                   <input 
                      type="text" 
-                     value={expandedTask.pane3Title || 'Kaynaklar & Linkler'} 
+                     value={expandedTask.pane3Title || 'Resources & Links'} 
                      onChange={(e) => {
                        const val = e.target.value;
                        setExpandedTask(prev => prev ? ({ ...prev, pane3Title: val }) : prev);
@@ -1060,7 +1297,7 @@ export default function FocusFlowApp() {
                   <div className="w-2 h-2 rounded-full bg-red-500 shrink-0"></div>
                   <input 
                      type="text" 
-                     value={expandedTask.pane4Title || 'Riskler & Engeller'} 
+                     value={expandedTask.pane4Title || 'Risks & Blockers'} 
                      onChange={(e) => {
                        const val = e.target.value;
                        setExpandedTask(prev => prev ? ({ ...prev, pane4Title: val }) : prev);

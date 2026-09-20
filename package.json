@@ -1,7 +1,7 @@
 {
   "name": "focusflow-app",
   "version": "1.1.0",
-  "description": "FocusFlow - Mikro Scrum Kanban Uygulamasi",
+  "description": "FocusFlow - Micro Scrum Kanban application",
   "author": "FocusFlow",
   "main": "electron/main.js",
   "scripts": {

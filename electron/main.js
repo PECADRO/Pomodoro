@@ -38,7 +38,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    frame: false, // Çerçevesiz modern görünüm ayarı
+    frame: false, // Frameless modern window
     transparent: true,
     backgroundColor: '#020617',
     webPreferences: {
