@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+
+# Local build and editor files
+main.json
+*.log
+.DS_Store
+Thumbs.db
+

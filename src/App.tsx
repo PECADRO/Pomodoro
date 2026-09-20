@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, GripVertical, CheckCircle2, Circle, Clock, AlertCircle, 
   Play, Pause, RotateCcw, ChevronLeft, Trash2, ChevronUp, ChevronDown, Image as ImageIcon,
-  MoreHorizontal
+  MoreHorizontal, Search, Minimize2, Square, X, Check, Save
 } from 'lucide-react';
 
 const QUOTES = [
@@ -77,13 +77,157 @@ type DragState = {
 
 type ActiveMenu = { id: string | null; x: number; y: number };
 
+const HISTORY_LIMIT = 20;
+const TASK_DEFAULTS = {
+  notes: '',
+  subtasks: '',
+  resources: '',
+  blockers: '',
+  status: 'todo',
+  collapsed: false,
+  pane1Title: 'Ideas / Notes',
+  pane2Title: 'Subtasks',
+  pane3Title: 'Resources & Links',
+  pane4Title: 'Risks & Blockers'
+};
+
+const COLUMN_DEFAULTS = {
+  color: 'slate',
+  x: 0,
+  y: 0,
+  collapsed: false
+};
+
+const IMAGE_MAX_LENGTH = 20;
+
+type PersistedSnapshot = {
+  tasks: Task[];
+  columns: Column[];
+  images: ImageItem[];
+  pomodoros: number;
+  timeLeft: number;
+  timerMode: TimerMode;
+};
+
+type TimerMode = 'focus' | 'shortBreak';
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
+type FocusFlowBridge = {
+  loadState: () => Promise<Partial<PersistedSnapshot> | null>;
+  saveState: (state: PersistedSnapshot) => Promise<unknown>;
+  saveAndClose: (state: PersistedSnapshot) => Promise<unknown>;
+  minimize: () => Promise<unknown>;
+  toggleMaximize: () => Promise<unknown>;
+  onBeforeClose: (callback: () => void) => () => void;
+};
+
+declare global {
+  interface Window {
+    focusflow?: FocusFlowBridge;
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const asString = (value: unknown, fallback = '') =>
+  typeof value === 'string' ? value : fallback;
+
+const asBoolean = (value: unknown, fallback = false) =>
+  typeof value === 'boolean' ? value : fallback;
+
+const asSafeNumber = (value: unknown, fallback: number) =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+
+const TIMER_SECONDS: Record<TimerMode, number> = {
+  focus: 25 * 60,
+  shortBreak: 5 * 60
+};
+
+const normalizeTask = (value: unknown): Task | null => {
+  if (!isRecord(value) || typeof value.id !== 'string') return null;
+  return {
+    id: value.id,
+    title: asString(value.title),
+    notes: asString(value.notes, TASK_DEFAULTS.notes),
+    subtasks: asString(value.subtasks, TASK_DEFAULTS.subtasks),
+    resources: asString(value.resources, TASK_DEFAULTS.resources),
+    blockers: asString(value.blockers, TASK_DEFAULTS.blockers),
+    status: asString(value.status, TASK_DEFAULTS.status),
+    collapsed: asBoolean(value.collapsed, TASK_DEFAULTS.collapsed),
+    pane1Title: asString(value.pane1Title, TASK_DEFAULTS.pane1Title),
+    pane2Title: asString(value.pane2Title, TASK_DEFAULTS.pane2Title),
+    pane3Title: asString(value.pane3Title, TASK_DEFAULTS.pane3Title),
+    pane4Title: asString(value.pane4Title, TASK_DEFAULTS.pane4Title)
+  };
+};
+
+const normalizeColumn = (value: unknown): Column | null => {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.title !== 'string') return null;
+  return {
+    id: value.id,
+    title: value.title,
+    color: asString(value.color, COLUMN_DEFAULTS.color),
+    x: typeof value.x === 'number' ? value.x : COLUMN_DEFAULTS.x,
+    y: typeof value.y === 'number' ? value.y : COLUMN_DEFAULTS.y,
+    collapsed: asBoolean(value.collapsed, COLUMN_DEFAULTS.collapsed)
+  };
+};
+
+const normalizeImage = (value: unknown): ImageItem | null => {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.url !== 'string') return null;
+  if (value.url.startsWith('blob:')) return null;
+  return {
+    id: value.id,
+    url: value.url,
+    x: typeof value.x === 'number' ? value.x : 0,
+    y: typeof value.y === 'number' ? value.y : 0,
+    width: typeof value.width === 'number' ? value.width : 200,
+    height: typeof value.height === 'number' ? value.height : 200
+  };
+};
+
 export default function FocusFlowApp() {
   const [quote, setQuote] = useState("");
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [searchQuery, setSearchQuery] = useState('');
+  const electronBridge = typeof window !== 'undefined' ? window.focusflow : undefined;
+  const latestSnapshotRef = useRef<PersistedSnapshot | null>(null);
+  const saveTimerRef = useRef<number | undefined>();
   
+  const loadData = <T,>(key: string, fallback: T, parser: (value: unknown) => T) => {
+    try {
+      if (electronBridge) return fallback;
+      const consolidated = localStorage.getItem('focusflow_state');
+      if (consolidated) {
+        const snapshot = JSON.parse(consolidated) as Record<string, unknown>;
+        const property = key.replace('focusflow_', '');
+        if (property in snapshot) return parser(snapshot[property]);
+      }
+      const saved = localStorage.getItem(key);
+      if (!saved) return fallback;
+      return parser(JSON.parse(saved));
+    } catch (error) {
+      return fallback;
+    }
+  };
+
   // App State
-  const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS as Task[]);
-  const [columns, setColumns] = useState<Column[]>(INITIAL_COLUMNS as Column[]);
-  const [images, setImages] = useState<ImageItem[]>([]);
+  const [tasks, setTasks] = useState<Task[]>(() => loadData('focusflow_tasks', INITIAL_TASKS, (value) => {
+    if (!Array.isArray(value)) return INITIAL_TASKS;
+    const normalized = value.map(normalizeTask).filter(Boolean) as Task[];
+    return normalized.length > 0 ? normalized : INITIAL_TASKS;
+  }));
+  const [columns, setColumns] = useState<Column[]>(() => loadData('focusflow_columns', INITIAL_COLUMNS, (value) => {
+    if (!Array.isArray(value)) return INITIAL_COLUMNS;
+    const normalized = value.map(normalizeColumn).filter(Boolean) as Column[];
+    return normalized.length > 0 ? normalized : INITIAL_COLUMNS;
+  }));
+  const [images, setImages] = useState<ImageItem[]>(() => loadData('focusflow_images', [], (value) => {
+    if (!Array.isArray(value)) return [];
+    return value.map(normalizeImage).filter(Boolean) as ImageItem[];
+  }));
   const [history, setHistory] = useState<HistoryEntry[]>([]);
 
   // UI States
@@ -104,10 +248,73 @@ export default function FocusFlowApp() {
   const [timeLeft, setTimeLeft] = useState(25 * 60);
   const [isActive, setIsActive] = useState(false);
   const [pomodoros, setPomodoros] = useState(0);
+  const [timerMode, setTimerMode] = useState<TimerMode>('focus');
+
+  const persistSnapshot = async (snapshot: PersistedSnapshot) => {
+    try {
+      localStorage.setItem('focusflow_state', JSON.stringify(snapshot));
+    } catch (error) {
+      console.error('Failed to persist FocusFlow state to localStorage', error);
+    }
+
+    if (electronBridge) {
+      await electronBridge.saveState(snapshot);
+    }
+  };
 
   useEffect(() => {
     setQuote(QUOTES[Math.floor(Math.random() * QUOTES.length)]);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrate = async () => {
+      if (!electronBridge) {
+        setIsHydrated(true);
+        return;
+      }
+
+      try {
+        const saved = await electronBridge.loadState();
+        if (cancelled) return;
+
+        if (saved && typeof saved === 'object') {
+          const snapshot = saved as Partial<PersistedSnapshot>;
+
+          if (Array.isArray(snapshot.tasks)) {
+            const hydratedTasks = snapshot.tasks.map(normalizeTask).filter(Boolean) as Task[];
+            if (hydratedTasks.length > 0) setTasks(hydratedTasks);
+          }
+
+          if (Array.isArray(snapshot.columns)) {
+            const hydratedColumns = snapshot.columns.map(normalizeColumn).filter(Boolean) as Column[];
+            if (hydratedColumns.length > 0) setColumns(hydratedColumns);
+          }
+
+          if (Array.isArray(snapshot.images)) {
+            const hydratedImages = snapshot.images.map(normalizeImage).filter(Boolean) as ImageItem[];
+            setImages(hydratedImages);
+          }
+
+          setPomodoros(asSafeNumber(snapshot.pomodoros, 0));
+          const hydratedMode: TimerMode = snapshot.timerMode === 'shortBreak' ? 'shortBreak' : 'focus';
+          setTimerMode(hydratedMode);
+          setTimeLeft(asSafeNumber(snapshot.timeLeft, TIMER_SECONDS[hydratedMode]));
+        }
+      } catch (error) {
+        console.error('Failed to load persisted FocusFlow state from Electron storage', error);
+      } finally {
+        if (!cancelled) setIsHydrated(true);
+      }
+    };
+
+    hydrate();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [electronBridge]);
 
   useEffect(() => {
     let interval: number | undefined;
@@ -115,31 +322,57 @@ export default function FocusFlowApp() {
       interval = window.setInterval(() => setTimeLeft(t => t - 1), 1000);
     } else if (timeLeft === 0) {
       setIsActive(false);
-      setPomodoros(p => p + 1);
-      setTimeLeft(25 * 60);
+      if (timerMode === 'focus') {
+        setPomodoros(p => p + 1);
+        setTimerMode('shortBreak');
+        setTimeLeft(TIMER_SECONDS.shortBreak);
+      } else {
+        setTimerMode('focus');
+        setTimeLeft(TIMER_SECONDS.focus);
+      }
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification(timerMode === 'focus' ? 'Odak tamamlandı' : 'Mola tamamlandı', {
+          body: timerMode === 'focus' ? 'Bir nefes alma zamanı.' : 'Yeni odak turuna hazırsın.'
+        });
+      }
     }
     return () => { if (interval) window.clearInterval(interval); };
-  }, [isActive, timeLeft]);
+  }, [isActive, timeLeft, timerMode]);
 
   // Handle Paste for Images
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
+      const imageItems = Array.from(items).filter((item) => item.type && item.type.indexOf('image') !== -1);
+      if (imageItems.length === 0) return;
+      saveToHistory();
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
         if (it && it.type && it.type.indexOf('image') !== -1) {
           const blob = it.getAsFile();
           if (!blob) continue;
-          const url = URL.createObjectURL(blob);
-          const newImg: ImageItem = { id: Date.now().toString(), url, x: window.innerWidth / 2 - 100, y: window.innerHeight / 2 - 100, width: 200, height: 200 };
-          updateState(null, null, [...images, newImg]);
+          const reader = new FileReader();
+          reader.onload = () => {
+            const url = typeof reader.result === 'string' ? reader.result : '';
+            if (!url) return;
+            const newImg: ImageItem = {
+              id: `${Date.now()}-${i}`,
+              url,
+              x: window.innerWidth / 2 - 100,
+              y: window.innerHeight / 2 - 100,
+              width: 200,
+              height: 200
+            };
+            setImages(prev => [...prev, newImg].slice(-IMAGE_MAX_LENGTH));
+          };
+          reader.readAsDataURL(blob);
         }
       }
     };
     window.addEventListener('paste', handlePaste as EventListener);
     return () => window.removeEventListener('paste', handlePaste as EventListener);
-  }, [images]);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -229,8 +462,54 @@ export default function FocusFlowApp() {
     return () => window.removeEventListener('keydown', handleKeyDown as EventListener);
   }, [tasks, selectedTasks, columns, expandedTask]);
 
+  useEffect(() => {
+    if (!isHydrated) return;
+    const snapshot = { tasks, columns, images, pomodoros, timeLeft, timerMode };
+    latestSnapshotRef.current = snapshot;
+
+    try {
+      localStorage.setItem('focusflow_state', JSON.stringify(snapshot));
+    } catch (error) {
+      console.error('Failed to persist FocusFlow state to localStorage', error);
+    }
+
+    setSaveStatus('saving');
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      persistSnapshot(snapshot)
+        .then(() => setSaveStatus('saved'))
+        .catch((error: unknown) => {
+          console.error('Failed to persist FocusFlow state', error);
+          setSaveStatus('error');
+        });
+    }, 350);
+
+    return () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    };
+  }, [tasks, columns, images, pomodoros, timeLeft, timerMode, isHydrated]);
+
+  useEffect(() => {
+    if (!electronBridge) return;
+    return electronBridge.onBeforeClose(() => {
+      const snapshot = latestSnapshotRef.current;
+      if (snapshot) electronBridge.saveAndClose(snapshot);
+    });
+  }, [electronBridge]);
+
+  const createHistoryEntry = (): HistoryEntry => ({
+    tasks: JSON.parse(JSON.stringify(tasks)),
+    columns: JSON.parse(JSON.stringify(columns)),
+    images: JSON.parse(JSON.stringify(images))
+  });
+
   const saveToHistory = () => {
-    setHistory(prev => [...prev.slice(-19), { tasks: JSON.parse(JSON.stringify(tasks)), columns: JSON.parse(JSON.stringify(columns)), images: JSON.parse(JSON.stringify(images)) }]);
+    setHistory(prev => [...prev.slice(-(HISTORY_LIMIT - 1)), createHistoryEntry()]);
+  };
+
+  const updateTaskById = (taskId: string, updater: (task: Task) => Task) => {
+    saveToHistory();
+    setTasks(prev => prev.map(task => (task.id === taskId ? updater(task) : task)));
   };
 
   const updateState = (newTasks: Task[] | null, newColumns: Column[] | null, newImages: ImageItem[] | null) => {
@@ -240,21 +519,30 @@ export default function FocusFlowApp() {
     if (newImages) setImages(newImages);
   };
 
+  const updateImageById = (imageId: string, updater: (image: ImageItem) => ImageItem) => {
+    saveToHistory();
+    setImages(prev => prev.map(image => (image.id === imageId ? updater(image) : image)));
+  };
+
   const handleUndo = () => {
-    if (history.length === 0) return;
-    const previousState = history[history.length - 1];
-    setTasks(previousState.tasks);
-    setColumns(previousState.columns);
-    setImages(previousState.images);
-    setHistory(prev => prev.slice(0, -1));
+    setHistory(prev => {
+      if (prev.length === 0) return prev;
+      const previousState = prev[prev.length - 1];
+      setTasks(previousState.tasks);
+      setColumns(previousState.columns);
+      setImages(previousState.images);
+      return prev.slice(0, -1);
+    });
   };
 
   const toggleColumnCollapse = (id: string) => {
+    saveToHistory();
     setColumns(prev => prev.map(c => c.id === id ? { ...c, collapsed: !c.collapsed } : c));
   };
 
   const toggleTaskCollapse = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    saveToHistory();
     setTasks(prev => prev.map(t => t.id === id ? { ...t, collapsed: !t.collapsed } : t));
   };
 
@@ -409,6 +697,23 @@ export default function FocusFlowApp() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const changeTimerMode = (mode: TimerMode) => {
+    setIsActive(false);
+    setTimerMode(mode);
+    setTimeLeft(TIMER_SECONDS[mode]);
+  };
+
+  const normalizedSearch = searchQuery.trim().toLocaleLowerCase('tr-TR');
+  const visibleTasks = normalizedSearch
+    ? tasks.filter(task => [task.title, task.notes, task.subtasks, task.resources, task.blockers]
+        .some(value => value.toLocaleLowerCase('tr-TR').includes(normalizedSearch)))
+    : tasks;
+
+  const closeApp = () => {
+    const snapshot = latestSnapshotRef.current;
+    if (electronBridge && snapshot) electronBridge.saveAndClose(snapshot);
+  };
+
 
   return (
     <div 
@@ -422,31 +727,60 @@ export default function FocusFlowApp() {
     >
       
       {/* HEADER / TOP BAR */}
-      <header className="fixed top-0 left-0 right-0 p-6 z-40 pointer-events-none flex flex-col items-center">
+      <header
+        className="fixed top-0 left-0 right-0 p-6 z-40 flex flex-col items-center pointer-events-none"
+        style={{ WebkitAppRegion: 'drag' } as any}
+      >
+
         {/* Pomodoro Timer (Top Left) */}
-        <div className="absolute top-6 left-6 pointer-events-auto">
-          <div className="flex items-center gap-3 bg-slate-800/80 backdrop-blur-md px-4 py-2 rounded-2xl border border-slate-700/50 shadow-lg">
-            <Clock size={18} className="text-indigo-400" />
-            <span className="text-xl font-bold font-mono text-slate-100">{formatTime(timeLeft)}</span>
-            <div className="flex items-center gap-1 ml-2">
-              <button onClick={() => setIsActive(!isActive)} className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors">
-                {isActive ? <Pause size={16} /> : <Play size={16} />}
-              </button>
-              <button onClick={() => { setIsActive(false); setTimeLeft(25 * 60); }} className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors">
-                <RotateCcw size={16} />
-              </button>
+        <div className="absolute top-4 left-4 pointer-events-auto" style={{ WebkitAppRegion: 'no-drag' } as any}>
+          <div className="flex items-center gap-2 bg-slate-800/90 backdrop-blur-md px-3 py-2 rounded-2xl border border-slate-700/60 shadow-lg">
+            <div className="flex rounded-lg bg-slate-950/50 p-0.5 text-[11px] font-semibold">
+              <button onClick={() => changeTimerMode('focus')} className={`px-2 py-1 rounded-md transition-colors ${timerMode === 'focus' ? 'bg-indigo-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}>Odak</button>
+              <button onClick={() => changeTimerMode('shortBreak')} className={`px-2 py-1 rounded-md transition-colors ${timerMode === 'shortBreak' ? 'bg-emerald-500 text-white' : 'text-slate-400 hover:text-slate-200'}`}>Mola</button>
             </div>
-            <div className="w-[1px] h-6 bg-slate-700/50 mx-1"></div>
-            <div className="px-2 flex items-center gap-1.5 text-sm font-medium text-slate-400 select-none">
-               🍅 x <span className="text-slate-200 font-bold">{pomodoros}</span>
+            <Clock size={17} className={timerMode === 'focus' ? 'text-indigo-400' : 'text-emerald-400'} />
+            <span className="text-xl font-bold font-mono text-slate-100 tabular-nums">{formatTime(timeLeft)}</span>
+            <button title={isActive ? 'Duraklat' : 'Başlat'} onClick={() => setIsActive(!isActive)} className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors">
+              {isActive ? <Pause size={16} /> : <Play size={16} />}
+            </button>
+            <button title="Sıfırla" onClick={() => { setIsActive(false); setTimeLeft(TIMER_SECONDS[timerMode]); }} className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors">
+              <RotateCcw size={16} />
+            </button>
+            <div className="w-px h-6 bg-slate-700/50 mx-0.5"></div>
+            <div className="flex items-center gap-1 text-sm font-medium text-slate-400 select-none" title="Tamamlanan odak turu">
+              🍅 <span className="text-slate-200 font-bold">{pomodoros}</span>
             </div>
           </div>
         </div>
 
-        {/* Stoic Quote (Center) */}
-        <p className="text-slate-400 text-sm md:text-base italic max-w-2xl text-center pointer-events-auto bg-slate-900/50 px-6 py-2 rounded-full border border-slate-800/50">
+  {/* Stoic Quote (Center) */}
+        <p className="hidden 2xl:block text-slate-400 text-sm italic max-w-xl text-center pointer-events-auto bg-slate-900/50 px-6 py-2 rounded-full border border-slate-800/50" style={{ WebkitAppRegion: 'no-drag' } as any}>
           {quote}
         </p>
+
+        {/* Search, autosave and window controls */}
+        <div className="absolute top-4 right-4 flex items-center gap-2 pointer-events-auto" style={{ WebkitAppRegion: 'no-drag' } as any}>
+          <label className="relative hidden md:block">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Görevlerde ara..."
+              className="w-48 bg-slate-800/90 border border-slate-700/60 rounded-xl py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/60"
+            />
+          </label>
+          <div className={`h-9 min-w-[92px] px-3 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-medium bg-slate-800/90 ${saveStatus === 'error' ? 'border-red-500/40 text-red-300' : 'border-slate-700/60 text-slate-400'}`}>
+            {saveStatus === 'saving' ? <><Save size={13} /> Kaydediliyor</> : saveStatus === 'error' ? 'Kayıt hatası' : <><Check size={13} className="text-emerald-400" /> Kaydedildi</>}
+          </div>
+          {electronBridge && (
+            <div className="flex items-center bg-slate-800/90 border border-slate-700/60 rounded-xl overflow-hidden">
+              <button title="Küçült" onClick={() => electronBridge.minimize()} className="p-2.5 text-slate-400 hover:bg-slate-700 hover:text-white"><Minimize2 size={14} /></button>
+              <button title="Büyüt / geri al" onClick={() => electronBridge.toggleMaximize()} className="p-2.5 text-slate-400 hover:bg-slate-700 hover:text-white"><Square size={13} /></button>
+              <button title="Kapat" onClick={closeApp} className="p-2.5 text-slate-400 hover:bg-red-500 hover:text-white"><X size={15} /></button>
+            </div>
+          )}
+        </div>
       </header>
 
       {/* INFINITE CANVAS ITEMS */}
@@ -479,7 +813,7 @@ export default function FocusFlowApp() {
                 <div className={`w-3 h-3 rounded-full bg-${col.color}-500/80 shadow-[0_0_8px_rgba(0,0,0,0.5)] shadow-${col.color}-500/50`}></div>
                 <h2 className="font-semibold text-slate-100 tracking-wide">{col.title}</h2>
                 <span className="text-xs font-medium bg-slate-900/50 text-slate-400 px-2 py-0.5 rounded-full ml-1">
-                  {tasks.filter(t => t.status === col.id).length}
+                  {visibleTasks.filter(t => t.status === col.id).length}
                 </span>
               </div>
               <button onClick={(e) => { e.stopPropagation(); toggleColumnCollapse(col.id); }} className="text-slate-500 hover:text-slate-300 transition-colors p-1 rounded-md hover:bg-slate-700/50 pointer-events-auto">
@@ -504,7 +838,7 @@ export default function FocusFlowApp() {
                 </form>
 
                 <div className="flex flex-col gap-3 flex-1 min-h-[50px] overflow-visible mt-1">
-                  {tasks.filter(t => t.status === col.id).map(task => {
+                  {visibleTasks.filter(t => t.status === col.id).map(task => {
                     const isSelected = selectedTasks.includes(task.id);
                     const isFocused = focusedTask === task.id;
                     const isDraggingThisTask = dragState.isDragging && dragState.type === 'task' && !!dragState.item && (dragState.item as Task).id === task.id;
@@ -624,7 +958,7 @@ export default function FocusFlowApp() {
                 onChange={(e) => {
                   const val = e.target.value;
                   setExpandedTask(prev => prev ? ({ ...prev, title: val }) : prev);
-                  setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, title: val } : t));
+                  updateTaskById(expandedTask.id, task => ({ ...task, title: val }));
                 }}
                 className="bg-transparent text-2xl font-semibold text-slate-100 focus:outline-none w-full mr-4 placeholder-slate-600 py-1"
                 placeholder="Görev başlığı..."
@@ -652,7 +986,7 @@ export default function FocusFlowApp() {
                      onChange={(e) => {
                        const val = e.target.value;
                        setExpandedTask(prev => prev ? ({ ...prev, pane1Title: val }) : prev);
-                       setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, pane1Title: val } : t));
+                       updateTaskById(expandedTask.id, task => ({ ...task, pane1Title: val }));
                      }}
                      className="bg-transparent text-sm font-semibold text-slate-400 focus:text-slate-200 focus:outline-none w-full"
                   />
@@ -662,7 +996,7 @@ export default function FocusFlowApp() {
                   onChange={(e) => {
                     const val = e.target.value;
                     setExpandedTask(prev => prev ? ({ ...prev, notes: val }) : prev);
-                    setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, notes: val } : t));
+                    updateTaskById(expandedTask.id, task => ({ ...task, notes: val }));
                   }}
                   className="flex-1 w-full bg-slate-950/50 border border-slate-800 rounded-xl p-4 text-slate-300 focus:outline-none focus:border-blue-500/50 focus:bg-slate-900 resize-y transition-colors min-h-[150px]"
                 />
@@ -678,7 +1012,7 @@ export default function FocusFlowApp() {
                      onChange={(e) => {
                        const val = e.target.value;
                        setExpandedTask(prev => prev ? ({ ...prev, pane2Title: val }) : prev);
-                       setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, pane2Title: val } : t));
+                       updateTaskById(expandedTask.id, task => ({ ...task, pane2Title: val }));
                      }}
                      className="bg-transparent text-sm font-semibold text-slate-400 focus:text-slate-200 focus:outline-none w-full"
                   />
@@ -688,7 +1022,7 @@ export default function FocusFlowApp() {
                   onChange={(e) => {
                     const val = e.target.value;
                     setExpandedTask(prev => prev ? ({ ...prev, subtasks: val }) : prev);
-                    setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, subtasks: val } : t));
+                    updateTaskById(expandedTask.id, task => ({ ...task, subtasks: val }));
                   }}
                   className="flex-1 w-full bg-slate-950/50 border border-slate-800 rounded-xl p-4 text-slate-300 focus:outline-none focus:border-indigo-500/50 focus:bg-slate-900 resize-y transition-colors min-h-[150px]"
                 />
@@ -704,7 +1038,7 @@ export default function FocusFlowApp() {
                      onChange={(e) => {
                        const val = e.target.value;
                        setExpandedTask(prev => prev ? ({ ...prev, pane3Title: val }) : prev);
-                       setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, pane3Title: val } : t));
+                       updateTaskById(expandedTask.id, task => ({ ...task, pane3Title: val }));
                      }}
                      className="bg-transparent text-sm font-semibold text-slate-400 focus:text-slate-200 focus:outline-none w-full"
                   />
@@ -714,7 +1048,7 @@ export default function FocusFlowApp() {
                   onChange={(e) => {
                     const val = e.target.value;
                     setExpandedTask(prev => prev ? ({ ...prev, resources: val }) : prev);
-                    setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, resources: val } : t));
+                    updateTaskById(expandedTask.id, task => ({ ...task, resources: val }));
                   }}
                   className="flex-1 w-full bg-slate-950/50 border border-slate-800 rounded-xl p-4 text-slate-300 focus:outline-none focus:border-emerald-500/50 focus:bg-slate-900 resize-y transition-colors min-h-[150px]"
                 />
@@ -730,7 +1064,7 @@ export default function FocusFlowApp() {
                      onChange={(e) => {
                        const val = e.target.value;
                        setExpandedTask(prev => prev ? ({ ...prev, pane4Title: val }) : prev);
-                       setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, pane4Title: val } : t));
+                       updateTaskById(expandedTask.id, task => ({ ...task, pane4Title: val }));
                      }}
                      className="bg-transparent text-sm font-semibold text-slate-400 focus:text-slate-200 focus:outline-none w-full"
                   />
@@ -740,7 +1074,7 @@ export default function FocusFlowApp() {
                   onChange={(e) => {
                     const val = e.target.value;
                     setExpandedTask(prev => prev ? ({ ...prev, blockers: val }) : prev);
-                    setTasks(prev => prev.map(t => t.id === expandedTask!.id ? { ...t, blockers: val } : t));
+                    updateTaskById(expandedTask.id, task => ({ ...task, blockers: val }));
                   }}
                   className="flex-1 w-full bg-slate-950/50 border border-slate-800 rounded-xl p-4 text-slate-300 focus:outline-none focus:border-red-500/50 focus:bg-slate-900 resize-y transition-colors min-h-[150px]"
                 />
@@ -754,3 +1088,4 @@ export default function FocusFlowApp() {
     </div>
   );
 }
+
